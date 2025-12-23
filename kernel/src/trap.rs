@@ -1,4 +1,8 @@
-use crate::{println, read_csr};
+use crate::{
+    println,
+    sbi::{self, putchar},
+    write_csr,
+};
 use core::arch::naked_asm;
 
 #[macro_export]
@@ -21,6 +25,7 @@ macro_rules! write_csr {
     }};
 }
 
+#[derive(Debug)]
 #[repr(packed)]
 struct TrapFrame {
     x1: u64,
@@ -102,7 +107,7 @@ pub unsafe extern "C" fn trap_vector() {
         "mv a0, sp", // Restore the stack before calling handler
         "call trap_handler",
         "ld x1, 0(sp)",
-        "ld x2, 8(sp)",
+        // skip x2 (sp) - restore it last from offset 248
         "ld x3, 16(sp)",
         "ld x4, 24(sp)",
         "ld x5, 32(sp)",
@@ -139,47 +144,73 @@ pub unsafe extern "C" fn trap_vector() {
     );
 }
 
+fn handle_syscall(
+    scause: u64,
+    user_pc: u64,
+    stval: u64,
+    frame: *mut TrapFrame,
+) -> Result<(), &'static str> {
+    let frame_ref = unsafe { frame.as_ref() }.unwrap();
+    match unsafe { (*frame).x13 } {
+        3 => {
+            putchar(frame_ref.x10 as u8);
+        }
+        2 => {
+            let chr = sbi::getchar_coop();
+            unsafe {
+                (*frame).x10 = chr as u64;
+            }
+        }
+        other => panic!("unknown syscall: {other}, frame: {:?}", frame_ref),
+    };
+    // Advance past ecall instruction; trap_vector will do sret
+    write_csr!("sepc", user_pc + 4);
+    Ok(())
+}
+
 // #[unsafe(link_section = ".text.stvec")]
 #[unsafe(no_mangle)]
-extern "C" fn trap_handler(_frame: *const TrapFrame) -> ! {
-    println!("In trap handler");
+extern "C" fn trap_handler(frame: *mut TrapFrame) {
     let scause = read_csr!("scause");
     let sepc = read_csr!("sepc");
     let stval = read_csr!("stval");
-    let str = match scause {
-        0 => "instr address misalign",
-        1 => "instruction access fault",
-        2 => "illegal instruction",
-        3 => "breakpoint",
-        4 => "load address misaligned",
-        5 => "load access fault",
-        6 => "store/AMO address misaligned",
-        7 => "store/AMO access fault",
-        8 => "environment call from U/VU-mode",
-        9 => "environment call from HS-mode",
-        10 => "environment call from VS-mode",
-        11 => "environment call from M-mode",
-        12 => "instruction page fault",
-        13 => "load page fault",
-        15 => "store/AMO page fault",
-        20 => "instruction guest-page fault",
-        21 => "load guest-page fault",
-        22 => "virtual instruction",
-        23 => "store/AMO guest-page fault",
-        0x8000_0000_0000_0000 => "user software interrupt",
-        0x8000_0000_0000_0001 => "supervisor software interrupt",
-        0x8000_0000_0000_0002 => "hypervisor software interrupt",
-        0x8000_0000_0000_0003 => "machine software interrupt",
-        0x8000_0000_0000_0004 => "user timer interrupt",
-        0x8000_0000_0000_0005 => "supervisor timer interrupt",
-        0x8000_0000_0000_0006 => "hypervisor timer interrupt",
-        0x8000_0000_0000_0007 => "machine timer interrupt",
-        0x8000_0000_0000_0008 => "user external interrupt",
-        0x8000_0000_0000_0009 => "supervisor external interrupt",
-        0x8000_0000_0000_000a => "hypervisor external interrupt",
-        0x8000_0000_0000_000b => "machine external interrupt",
+    let result = match scause {
+        0 => Err("instr address misalign"),
+        1 => Err("instruction access fault"),
+        2 => Err("illegal instruction"),
+        3 => Err("breakpoint"),
+        4 => Err("load address misaligned"),
+        5 => Err("load access fault"),
+        6 => Err("store/AMO address misaligned"),
+        7 => Err("store/AMO access fault"),
+        8 => handle_syscall(scause, sepc, stval, frame),
+        9 => Err("environment call from HS-mode"),
+        10 => Err("environment call from VS-mode"),
+        11 => Err("environment call from M-mode"),
+        12 => Err("instruction page fault"),
+        13 => Err("load page fault"),
+        15 => Err("store/AMO page fault"),
+        20 => Err("instruction guest-page fault"),
+        21 => Err("load guest-page fault"),
+        22 => Err("virtual instruction"),
+        23 => Err("store/AMO guest-page fault"),
+        0x8000_0000_0000_0000 => Err("user software interrupt"),
+        0x8000_0000_0000_0001 => Err("supervisor software interrupt"),
+        0x8000_0000_0000_0002 => Err("hypervisor software interrupt"),
+        0x8000_0000_0000_0003 => Err("machine software interrupt"),
+        0x8000_0000_0000_0004 => Err("user timer interrupt"),
+        0x8000_0000_0000_0005 => Err("supervisor timer interrupt"),
+        0x8000_0000_0000_0006 => Err("hypervisor timer interrupt"),
+        0x8000_0000_0000_0007 => Err("machine timer interrupt"),
+        0x8000_0000_0000_0008 => Err("user external interrupt"),
+        0x8000_0000_0000_0009 => Err("supervisor external interrupt"),
+        0x8000_0000_0000_000a => Err("hypervisor external interrupt"),
+        0x8000_0000_0000_000b => Err("machine external interrupt"),
         _ => panic!("unknown scause: {:#x}", scause),
     };
 
-    panic!("trap handler: {} at {:#x} (stval={:#x})", str, sepc, stval);
+    match result {
+        Ok(()) => (),
+        Err(msg) => panic!("trap handler: {} at {:#x} (stval={:#x})", msg, sepc, stval),
+    };
 }

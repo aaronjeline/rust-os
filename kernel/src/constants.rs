@@ -8,5 +8,4 @@ unsafe extern "C" {
 
 pub const USER_BASE: usize = 0x1000000;
 
-//pub const SHELL: &[u8] = include_bytes!("../../shell.bin");
-pub const SHELL: &[u8] = &[];
+pub const SHELL: &[u8] = include_bytes!("../../shell.bin");

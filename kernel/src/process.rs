@@ -1,6 +1,6 @@
 use crate::{
     constants::{self, USER_BASE},
-    memory::{self, alloc_pages, Paddr, PageFlags, Vaddr, PAGE_SIZE, PTE},
+    memory::{self, PAGE_SIZE, PTE, Paddr, PageFlags, Vaddr, alloc_pages},
     println, write_csr,
 };
 use core::{
@@ -215,7 +215,7 @@ impl Scheduler {
 
             // Set up the saved register area
             *sp.add(0) = user_entry as u64; // ra = entry point
-                                            // s0-s11 are initialized to 0 (stack is already zeroed)
+            // s0-s11 are initialized to 0 (stack is already zeroed)
 
             // Store the sp pointing to the saved register area
             proc.sp = sp as u64;
@@ -339,16 +339,15 @@ pub fn ps() {
 
 const STATUS_PIE: u64 = 1 << 5;
 
-// #[unsafe(naked)]
+#[unsafe(naked)]
 extern "C" fn user_entry() {
-    todo!()
-    // naked_asm!(
-    //     "li t0, {sepc}",
-    //     "csrw sepc, t0",
-    //     "li t1, {sstatus}",
-    //     "csrw sstatus, t1",
-    //     "sret",
-    //     sepc = const USER_BASE,
-    //     sstatus = const STATUS_PIE,
-    // )
+    naked_asm!(
+        "li t0, {sepc}",
+        "csrw sepc, t0",
+        "li t1, {sstatus}",
+        "csrw sstatus, t1",
+        "sret",
+        sepc = const USER_BASE,
+        sstatus = const STATUS_PIE,
+    )
 }
