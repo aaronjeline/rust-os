@@ -14,11 +14,19 @@ const PROC_STACK_SIZE: usize = 8192;
 /// Size of our process table
 const PROCS_MAX: usize = 8;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessState {
+    Runnable,
+    Invalid,
+    Exited,
+}
+
 /// A process in the system
 #[derive(Debug)]
 pub struct Process {
     pid: Pid,
     sp: u64,
+    state: ProcessState,
     page_table: *mut PTE,
     stack: [u8; PROC_STACK_SIZE],
 }
@@ -28,13 +36,18 @@ impl Process {
     /// _none_ of the fields in here are valid after this call
     /// Especially `page_table`
     /// It is the responsibility of the caller to initialize these fields
-    pub unsafe fn uninitialized() -> Self {
+    pub const fn uninitialized() -> Self {
         Self {
             pid: Pid::idle(),
+            state: ProcessState::Invalid,
             sp: 0,
             page_table: 0 as *mut PTE,
             stack: [0; PROC_STACK_SIZE],
         }
+    }
+
+    pub fn is_runnable(&self) -> bool {
+        !self.pid().is_idle() && self.state == ProcessState::Runnable
     }
 
     pub fn pid(&self) -> Pid {
@@ -50,18 +63,28 @@ impl Process {
     pub fn is_idle_process(&self) -> bool {
         self.pid.is_idle()
     }
+
+    /// Mark this process for exit
+    pub fn exit(&mut self) {
+        println!("Process {} exiting", self.pid());
+        self.state = ProcessState::Exited;
+    }
 }
 
 impl core::fmt::Display for Process {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Process {} - current sp {:#x}", self.pid, self.sp)
+        match self.state {
+            ProcessState::Runnable => write!(f, "Process {} - current sp {:#x}", self.pid, self.sp),
+            ProcessState::Invalid => write!(f, "<unallocated process>"),
+            ProcessState::Exited => write!(f, "<Process {} - exited>", self.pid()),
+        }
     }
 }
 
 /// The process scheduler
 pub struct Scheduler {
     /// The active process table
-    procs: [Option<Process>; PROCS_MAX],
+    procs: [Process; PROCS_MAX],
     /// The pid of the currently running process
     current: Pid,
 }
@@ -72,11 +95,21 @@ impl Scheduler {
         let idle = Process {
             pid: Pid::idle(),
             sp: 0,
+            state: ProcessState::Runnable,
             page_table: 0 as *mut PTE,
             stack: [0; PROC_STACK_SIZE],
         };
         Self {
-            procs: [Some(idle), None, None, None, None, None, None, None],
+            procs: [
+                idle,
+                Process::uninitialized(),
+                Process::uninitialized(),
+                Process::uninitialized(),
+                Process::uninitialized(),
+                Process::uninitialized(),
+                Process::uninitialized(),
+                Process::uninitialized(),
+            ],
             current: Pid::idle(),
         }
     }
@@ -84,14 +117,12 @@ impl Scheduler {
     /// Get a reference to the next process to switch to
     fn find_next_process(&self) -> &Process {
         for i in 1..=PROCS_MAX {
-            let maybe_proc = self.procs[(self.current.as_usize() + i) % PROCS_MAX].as_ref();
-            match maybe_proc {
-                Some(proc) if proc.is_idle_process() => continue,
-                Some(proc) => return proc,
-                None => continue,
+            let proc = &self.procs[(self.current.as_usize() + i) % PROCS_MAX];
+            if proc.is_runnable() {
+                return proc;
             }
         }
-        unreachable!()
+        panic!("No runnable processes!?");
     }
 
     /// Cooperative yield.
@@ -124,8 +155,8 @@ impl Scheduler {
             // Step 4: execute the context switch
             unsafe {
                 switch_context(
-                    self.get_mut(prev).unwrap().get_mut_sp(),
-                    self.get_mut(self.current).unwrap().get_mut_sp(),
+                    self.get_mut(prev).get_mut_sp(),
+                    self.get_mut(self.current).get_mut_sp(),
                 )
             };
         }
@@ -133,27 +164,25 @@ impl Scheduler {
 
     /// Get an iterator over the currently running processes
     pub fn running_processes(&self) -> impl Iterator<Item = &Process> {
-        self.procs.iter().filter_map(|x| x.as_ref())
+        self.procs.iter().filter(|p| p.is_runnable())
     }
 
     /// Get a shared reference to an entry in the process table
-    pub fn get(&self, pid: Pid) -> Option<&Process> {
-        self.procs[pid.as_usize()].as_ref()
+    pub fn get(&self, pid: Pid) -> &Process {
+        &self.procs[pid.as_usize()]
     }
 
     /// Get a mutable reference to an entry in the process table
-    pub fn get_mut(&mut self, pid: Pid) -> Option<&mut Process> {
-        self.procs[pid.as_usize()].as_mut()
+    pub fn get_mut(&mut self, pid: Pid) -> &mut Process {
+        &mut self.procs[pid.as_usize()]
     }
 
     /// Finds the next free process in the process table and initializes it's PID
     /// _all other_ fields are uninitialized!
     /// PANICS: if there are no new process slots.
     unsafe fn find_free_process(&mut self) -> &mut Process {
-        for (i, opt_proc) in self.procs.iter_mut().enumerate() {
-            if opt_proc.is_none() {
-                *opt_proc = Some(unsafe { Process::uninitialized() });
-                let proc = opt_proc.as_mut().unwrap();
+        for (i, proc) in self.procs.iter_mut().enumerate() {
+            if proc.state == ProcessState::Invalid {
                 (*proc).pid = Pid::new(i);
                 return proc;
             }
@@ -220,6 +249,8 @@ impl Scheduler {
             // Store the sp pointing to the saved register area
             proc.sp = sp as u64;
         }
+        // Finally, mark the process as runnable
+        (*proc).state = ProcessState::Runnable;
         return proc.pid;
     }
 }
@@ -276,10 +307,7 @@ impl core::fmt::Display for Scheduler {
         writeln!(f, "Current active process: {}", self.current)?;
         writeln!(f, "Process Table:")?;
         for proc in self.procs.iter() {
-            match proc {
-                None => writeln!(f, "<unallocated process>")?,
-                Some(p) => writeln!(f, "{p}")?,
-            }
+            writeln!(f, "{proc}");
         }
         Ok(())
     }
@@ -334,6 +362,15 @@ pub fn ps() {
     unsafe {
         let ptr = core::ptr::addr_of!(GLOBAL_SCHEDULER);
         println!("{}", *ptr);
+    }
+}
+
+/// Get a mutable reference to the currently running process
+pub fn current_process() -> &'static mut Process {
+    unsafe {
+        let ptr = core::ptr::addr_of_mut!(GLOBAL_SCHEDULER);
+        let current_pid = (*ptr).current;
+        (*ptr).get_mut(current_pid)
     }
 }
 

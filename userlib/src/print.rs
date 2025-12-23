@@ -1,10 +1,10 @@
-use crate::syscall::putchar;
+use crate::syscall::put_char;
 pub struct Printer;
 
 impl core::fmt::Write for Printer {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for byte in s.bytes() {
-            putchar(byte);
+            put_char(byte);
         }
         Ok(())
     }

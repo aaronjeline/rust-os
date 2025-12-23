@@ -1,8 +1,9 @@
 use crate::{
-    println,
+    process::{self, do_yield},
     sbi::{self, putchar},
-    write_csr,
 };
+use alloc::{fmt::format, string::String};
+use common::Syscall;
 use core::arch::naked_asm;
 
 #[macro_export]
@@ -145,27 +146,43 @@ pub unsafe extern "C" fn trap_vector() {
 }
 
 fn handle_syscall(
-    scause: u64,
+    _scause: u64,
     user_pc: u64,
-    stval: u64,
+    _stval: u64,
     frame: *mut TrapFrame,
 ) -> Result<(), &'static str> {
-    let frame_ref = unsafe { frame.as_ref() }.unwrap();
-    match unsafe { (*frame).x13 } {
-        3 => {
+    let sysno = unsafe { (*frame).x13 };
+    let call = sysno.try_into();
+    match call {
+        Ok(call) => execute_syscall(call, frame),
+        Err(other) => {
+            let frame_ref = unsafe { frame.as_ref() }.unwrap();
+            panic!("Unknown syscall: {other}, frame {:?}", frame_ref);
+        }
+    }
+    // Advance past ecall instruction; trap_vector will do sret
+    write_csr!("sepc", user_pc + 4);
+    Ok(())
+}
+
+fn execute_syscall(syscall: Syscall, frame: *mut TrapFrame) {
+    match syscall {
+        Syscall::PUTCHAR => {
+            let frame_ref = unsafe { frame.as_ref() }.unwrap();
             putchar(frame_ref.x10 as u8);
         }
-        2 => {
+        Syscall::GETCHAR => {
             let chr = sbi::getchar_coop();
             unsafe {
                 (*frame).x10 = chr as u64;
             }
         }
-        other => panic!("unknown syscall: {other}, frame: {:?}", frame_ref),
-    };
-    // Advance past ecall instruction; trap_vector will do sret
-    write_csr!("sepc", user_pc + 4);
-    Ok(())
+        Syscall::EXIT => {
+            process::current_process().exit();
+            do_yield();
+            unreachable!("Exited process returned too!");
+        }
+    }
 }
 
 // #[unsafe(link_section = ".text.stvec")]

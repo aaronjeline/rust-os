@@ -2,14 +2,10 @@
 #![no_main]
 
 use core::{arch::naked_asm, panic::PanicInfo};
-#[macro_use]
-mod user;
-mod print;
-mod syscall;
-use user::exit;
-
-use crate::syscall::{getchar, putchar};
-
+use userlib::{
+    print, println,
+    syscall::{exit, get_char, put_char},
+};
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {}
@@ -34,9 +30,9 @@ fn main() {
         // let mut buf = Vec::with_capacity(512);
         let mut buf = [0; 512];
         for i in 0..buf.len() {
-            let c = getchar();
+            let c = get_char();
 
-            putchar(c);
+            put_char(c);
             if c == b'\r' {
                 print!("\n");
                 break;
@@ -46,6 +42,8 @@ fn main() {
         }
         if &buf[..5] == b"hello" {
             println!("hello world!");
+        } else if &buf[..4] == b"exit" {
+            exit()
         } else {
             println!("Unknown command",);
         }

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 spin = "0.10.0"
+common = { path = "../common" }
 
 [profile.dev]
 panic = "abort"

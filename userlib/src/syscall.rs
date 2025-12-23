@@ -1,27 +1,19 @@
+use common::Syscall;
 use core::arch::asm;
 
-use crate::println;
-pub fn putchar(ch: u8) {
+pub fn put_char(ch: u8) {
     unsafe { syscall(ch as u64, 0, 0, Syscall::PUTCHAR) };
 }
 
-pub fn getchar() -> u8 {
+pub fn get_char() -> u8 {
     (unsafe { syscall(0, 0, 0, Syscall::GETCHAR) }) as u8
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Syscall {
-    PUTCHAR,
-    GETCHAR,
-}
-
-impl Into<u64> for Syscall {
-    fn into(self) -> u64 {
-        match self {
-            Self::PUTCHAR => 3,
-            Self::GETCHAR => 2,
-        }
+pub fn exit() -> ! {
+    unsafe {
+        syscall(0, 0, 0, Syscall::EXIT);
     }
+    unreachable!()
 }
 
 unsafe fn syscall(arg0: u64, arg1: u64, arg2: u64, sysno: Syscall) -> u64 {
