@@ -62,9 +62,9 @@ fn main() -> ! {
     allocator::GLOBAL_ALLOCATOR.init(&raw mut __heap, &raw mut __heap_end);
     println!("Allocator initialized!");
 
-    let driver = virtio::BlockDeviceDriver::new();
+    let mut driver = virtio::BlockDeviceDriver::new();
     let mut buf = [0; 512];
-    driver.read_write_disk(&mut buf, 0, false);
+    driver.disk_read(&mut buf, 0).unwrap();
     let s = String::from_utf8_lossy(&buf);
     println!("First sector {s}");
     let source = b"Hello from kernel!\n";
@@ -72,7 +72,7 @@ fn main() -> ! {
         copy_nonoverlapping(source.as_ptr(), buf.as_mut_ptr(), source.len());
     }
 
-    driver.read_write_disk(&mut buf, 0, true);
+    driver.disk_write(&buf, 0).unwrap();
 
     process::create_process(constants::SHELL);
 

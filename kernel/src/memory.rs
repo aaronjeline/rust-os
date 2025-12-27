@@ -222,3 +222,13 @@ pub fn map_page(table1: *mut PTE, vaddr: Vaddr, paddr: Paddr, flags: PageFlags) 
 fn is_aligned(value: u64) -> bool {
     value % 4096 == 0
 }
+
+pub fn align_up(value: usize, align: usize) -> usize {
+    if value % align == 0 {
+        value
+    } else {
+        let rem = value % align;
+        let slop = align - rem;
+        value + slop
+    }
+}

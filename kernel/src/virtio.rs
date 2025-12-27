@@ -1,11 +1,15 @@
 use core::{
+    marker::PhantomPinned,
     mem::offset_of,
+    pin::Pin,
     ptr::{addr_of, addr_of_mut, copy_nonoverlapping},
     sync::atomic::{Ordering, fence},
 };
 
+use alloc::boxed::Box;
+
 use crate::{
-    memory::{PAGE_SIZE, alloc_pages},
+    memory::{PAGE_SIZE, align_up, alloc_pages},
     println,
 };
 
@@ -36,7 +40,7 @@ const VIRTQ_AVAIL_F_NO_INTERRUPT: usize = 1;
 const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(packed)]
 pub struct Descriptor {
     addr: u64,
@@ -45,7 +49,7 @@ pub struct Descriptor {
     next: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(packed)]
 pub struct Available {
     flags: u16,
@@ -53,7 +57,7 @@ pub struct Available {
     ring: [u16; VIRTQ_ENTRY_NUM],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(packed)]
 pub struct UsedElemEntry {
     id: u32,
@@ -61,6 +65,7 @@ pub struct UsedElemEntry {
 }
 
 #[repr(packed)]
+#[derive(Default, Clone, Copy)]
 pub struct Used {
     flags: u16,
     index: u16,
@@ -75,17 +80,26 @@ pub struct Virtq {
         - ((size_of::<[Descriptor; VIRTQ_ENTRY_NUM]>() + size_of::<Available>()) % PAGE_SIZE)],
     used: Used,
     queue_index: u32,
-    used_index: *mut u16,
+    used_index: *mut u16, // Points to used.index
     last_used_index: u16,
+    __phantom: PhantomPinned, // Ensures this structure is pinned, as it points to itself
 }
 
-fn align_up(value: usize, align: usize) -> usize {
-    if value % align == 0 {
-        value
-    } else {
-        let rem = value % align;
-        let slop = align - rem;
-        value + slop
+impl Virtq {
+    pub fn init(index: u32) -> Pin<Box<Self>> {
+        // Can't use `Box::new()` here as we need it to be page-aligned
+        let virtq_paddr = alloc_pages(align_up(size_of::<Virtq>(), PAGE_SIZE) / PAGE_SIZE);
+        let mut ptr = unsafe { Box::from_raw(virtq_paddr as *mut Virtq) };
+        (*ptr).queue_index = index;
+        (*ptr).used_index = addr_of_mut!((*ptr).used.index);
+        unsafe {
+            virtio_reg_write32(VIRTIO_REG_QUEUE_SEL, index);
+            virtio_reg_write32(VIRTIO_REG_QUEUE_NUM, VIRTQ_ENTRY_NUM as u32);
+            virtio_reg_write32(VIRTIO_REG_QUEUE_ALIGN, 0);
+            // Write the physical address of the virtq to
+            virtio_reg_write64(VIRTIO_REG_QUEUE_PFN, addr_of!(*ptr).addr() as u64);
+        }
+        Box::into_pin(ptr)
     }
 }
 
@@ -97,6 +111,12 @@ struct BlockRequest {
     sector: u64,
     data: [u8; 512],
     status: u8,
+}
+
+impl BlockRequest {
+    pub fn ok(&self) -> bool {
+        self.status == 0
+    }
 }
 
 impl Default for BlockRequest {
@@ -146,9 +166,39 @@ unsafe fn virtio_reg_fetch_and_or32(offset: usize, value: u32) {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum IOError {
+    InvalidSector(u64, u64),
+    NotEnoughSpaceForRead(usize),
+    WriteFail(u64, u8),
+    ReadFail(u64, u8),
+}
+
+impl core::fmt::Display for IOError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            IOError::InvalidSector(sector, capacity) => write!(
+                f,
+                "Tried to write to sector {sector} but capacity was {capacity}"
+            ),
+            IOError::WriteFail(sector, status) => {
+                write!(f, "Failed to write to sector {sector}, status: {status}")
+            }
+            IOError::ReadFail(sector, status) => {
+                write!(f, "Failed to read from sector {sector}, status: {status}")
+            }
+            IOError::NotEnoughSpaceForRead(size) => write!(
+                f,
+                "Buffer did not have enough space to read a sector. Had {size} bytes, must have at least {SECTOR_SIZE} bytes."
+            ),
+        }
+    }
+}
+
+impl core::error::Error for IOError {}
+
 pub struct BlockDeviceDriver {
-    pub virtq: *mut Virtq,
-    pub block_req: *mut BlockRequest,
+    pub virtq: Pin<Box<Virtq>>,
     pub capacity: u64,
 }
 
@@ -179,35 +229,36 @@ impl BlockDeviceDriver {
             // Set the FEATURES_OK status bit.
             // (Nominally, we should scan the offered features and make sure we can handle them, but 🤷‍♂️)
             virtio_reg_fetch_and_or32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_FEAT_OK);
-
-            let virtq = virtq_init(0);
-            virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER_OK);
-
-            // Get the disk capacity
-            let capacity = virtio_reg_read64(VIRTIO_REG_DEVICE_CONFIG + 0) * SECTOR_SIZE;
-            println!("virtio-blk: capacity is {capacity} bytes");
-            // Allocate a block request structure
-            // FIXME: there's got a be a more rusty way to do this)
-            let block_req = alloc_pages(align_up(size_of::<BlockRequest>(), PAGE_SIZE) / PAGE_SIZE)
-                as *mut BlockRequest;
-            Self {
-                capacity,
-                block_req,
-                virtq,
-            }
         }
+
+        // let virtq = virtq_init(0);
+        let virtq = Virtq::init(0);
+        let capacity;
+
+        unsafe {
+            virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER_OK);
+            // Get the disk capacity
+            capacity = virtio_reg_read64(VIRTIO_REG_DEVICE_CONFIG + 0) * SECTOR_SIZE;
+        }
+        println!("virtio-blk: capacity is {capacity} bytes");
+        Self { capacity, virtq }
+    }
+
+    /// SAFETY: DO NOT CALL std::mem::swap() on this pointer
+    fn vq(&mut self) -> &mut Virtq {
+        unsafe { Pin::get_unchecked_mut(self.virtq.as_mut()) }
     }
 
     /// Notify the device of a new request
-    pub fn kick(&self, desc_index: u16) {
+    pub fn kick(&mut self, desc_index: u16) {
+        let index = ((*self.virtq).available.index as usize) % VIRTQ_ENTRY_NUM;
+        self.vq().available.ring[index] = desc_index;
+        self.vq().available.index += 1;
+        fence(Ordering::SeqCst);
         unsafe {
-            let index = ((*self.virtq).available.index as usize) % VIRTQ_ENTRY_NUM;
-            (*self.virtq).available.ring[index] = desc_index;
-            (*self.virtq).available.index += 1;
-            fence(Ordering::SeqCst);
             virtio_reg_write32(VIRTIO_REG_QUEUE_NOTIFY, (*self.virtq).queue_index);
-            (*self.virtq).last_used_index += 1;
         }
+        self.vq().last_used_index += 1;
     }
 
     /// Are there any requests being processed device side?
@@ -215,78 +266,82 @@ impl BlockDeviceDriver {
         unsafe { (*self.virtq).last_used_index != *(*self.virtq).used_index }
     }
 
-    /// FIXME: this whole function is pretty much a straight C transliteration
-    pub fn read_write_disk(&self, buf: &mut [u8], sector: u64, is_write: bool) {
-        if sector >= self.capacity / SECTOR_SIZE {
-            println!(
-                "virtio: tried to read/write sector={sector}, but capacity is {}",
-                self.capacity
-            );
-            return;
+    pub fn disk_read(&mut self, buf: &mut [u8], sector: u64) -> Result<(), IOError> {
+        if buf.len() < SECTOR_SIZE as usize {
+            return Err(IOError::NotEnoughSpaceForRead(buf.len()));
         }
+        self.assert_sector_in_range(sector)?;
         let mut request = BlockRequest::default();
-        unsafe {
-            request.sector = sector;
-            request.type_ = if is_write {
-                VIRTIO_BLK_T_OUT
-            } else {
-                VIRTIO_BLK_T_IN
-            };
-            if is_write {
-                copy_nonoverlapping(buf.as_ptr(), request.data.as_mut_ptr(), buf.len());
-            }
-            let blk_req_paddr = addr_of!(request).addr();
-            (*self.virtq).descriptors[0].addr = blk_req_paddr as u64;
-            (*self.virtq).descriptors[0].len = (size_of::<u32>() * 2 + size_of::<u64>()) as u32;
-            (*self.virtq).descriptors[0].flags = VIRTQ_DESC_F_NEXT;
-            (*self.virtq).descriptors[0].next = 1;
+        request.sector = sector;
+        request.type_ = VIRTIO_BLK_T_IN;
+        let address = addr_of!(request).addr();
+        self.vq().descriptors[0].addr = address as u64;
+        self.vq().descriptors[0].len = (size_of::<u32>() * 2 + size_of::<u64>()) as u32;
+        self.vq().descriptors[0].flags = VIRTQ_DESC_F_NEXT;
+        self.vq().descriptors[0].next = 1;
 
-            (*self.virtq).descriptors[1].addr =
-                (blk_req_paddr + offset_of!(BlockRequest, data)) as u64;
-            (*self.virtq).descriptors[1].len = SECTOR_SIZE as u32;
-            (*self.virtq).descriptors[1].flags =
-                VIRTQ_DESC_F_NEXT | (if is_write { 0 } else { VIRTQ_DESC_F_WRITE });
-            (*self.virtq).descriptors[1].next = 2;
+        self.vq().descriptors[1].addr = (address + offset_of!(BlockRequest, data)) as u64;
+        self.vq().descriptors[1].len = SECTOR_SIZE as u32;
+        self.vq().descriptors[1].flags = VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE;
+        self.vq().descriptors[1].next = 2;
 
-            (*self.virtq).descriptors[2].addr =
-                (blk_req_paddr + offset_of!(BlockRequest, status)) as u64;
-            (*self.virtq).descriptors[2].len = size_of::<u8>() as u32;
-            (*self.virtq).descriptors[2].flags = VIRTQ_DESC_F_WRITE;
+        self.vq().descriptors[2].addr = (address + offset_of!(BlockRequest, status)) as u64;
+        self.vq().descriptors[2].len = size_of::<u8>() as u32;
+        self.vq().descriptors[2].flags = VIRTQ_DESC_F_WRITE;
+
+        self.kick(0);
+        while self.is_busy() {}
+        if !request.ok() {
+            return Err(IOError::ReadFail(sector, request.status));
         }
+        unsafe {
+            copy_nonoverlapping(
+                request.data.as_ptr(),
+                buf.as_mut_ptr(),
+                SECTOR_SIZE as usize,
+            );
+        }
+        Ok(())
+    }
+
+    fn assert_sector_in_range(&self, sector: u64) -> Result<(), IOError> {
+        if sector < self.capacity / SECTOR_SIZE {
+            Ok(())
+        } else {
+            Err(IOError::InvalidSector(sector, self.capacity))
+        }
+    }
+
+    pub fn disk_write(&mut self, buf: &[u8], sector: u64) -> Result<(), IOError> {
+        self.assert_sector_in_range(sector)?;
+        let mut request = BlockRequest::default();
+        request.sector = sector;
+        request.type_ = VIRTIO_BLK_T_OUT;
+        unsafe {
+            copy_nonoverlapping(buf.as_ptr(), request.data.as_mut_ptr(), buf.len());
+        }
+        let address = addr_of!(request).addr();
+        self.vq().descriptors[0].addr = address as u64;
+        self.vq().descriptors[0].len = (size_of::<u32>() * 2 + size_of::<u64>()) as u32;
+        self.vq().descriptors[0].flags = VIRTQ_DESC_F_NEXT;
+        self.vq().descriptors[0].next = 1;
+
+        self.vq().descriptors[1].addr = (address + offset_of!(BlockRequest, data)) as u64;
+        self.vq().descriptors[1].len = SECTOR_SIZE as u32;
+        self.vq().descriptors[1].flags = VIRTQ_DESC_F_NEXT;
+        self.vq().descriptors[1].next = 2;
+
+        self.vq().descriptors[2].addr = (address + offset_of!(BlockRequest, status)) as u64;
+        self.vq().descriptors[2].len = size_of::<u8>() as u32;
+        self.vq().descriptors[2].flags = VIRTQ_DESC_F_WRITE;
+
         self.kick(0);
         while self.is_busy() {}
 
-        if request.status != 0 {
-            println!(
-                "virtio: warn: failed to read/write sector={sector}, {}",
-                request.status
-            );
-        }
-
-        if !is_write {
-            unsafe {
-                // FIXME: probably need to check if buf is big enough
-                copy_nonoverlapping(
-                    request.data.as_ptr(),
-                    buf.as_mut_ptr(),
-                    SECTOR_SIZE as usize,
-                );
-            }
+        if request.ok() {
+            Ok(())
+        } else {
+            Err(IOError::WriteFail(sector, request.status))
         }
     }
-}
-
-fn virtq_init(index: u32) -> *mut Virtq {
-    let virtq_paddr = alloc_pages(align_up(size_of::<Virtq>(), PAGE_SIZE) / PAGE_SIZE);
-    let vq = virtq_paddr as *mut Virtq;
-    unsafe {
-        (*vq).queue_index = index;
-        (*vq).used_index = addr_of_mut!((*vq).used.index);
-        virtio_reg_write32(VIRTIO_REG_QUEUE_SEL, index);
-        virtio_reg_write32(VIRTIO_REG_QUEUE_NUM, VIRTQ_ENTRY_NUM as u32);
-        virtio_reg_write32(VIRTIO_REG_QUEUE_ALIGN, 0);
-        // Write the physical address of the virtq to
-        virtio_reg_write64(VIRTIO_REG_QUEUE_PFN, virtq_paddr.addr() as u64);
-    }
-    vq
 }
