@@ -8,14 +8,18 @@ mod dummy_procs;
 mod memory;
 mod process;
 mod sbi;
+mod virtio;
 #[macro_use]
 mod print;
 #[macro_use]
 mod trap;
 
+use alloc::slice;
+use alloc::string::String;
 use constants::*;
 use core::arch::asm;
 use core::panic::PanicInfo;
+use core::ptr::copy_nonoverlapping;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]
@@ -57,6 +61,18 @@ fn main() -> ! {
 
     allocator::GLOBAL_ALLOCATOR.init(&raw mut __heap, &raw mut __heap_end);
     println!("Allocator initialized!");
+
+    let driver = virtio::BlockDeviceDriver::new();
+    let mut buf = [0; 512];
+    driver.read_write_disk(&mut buf, 0, false);
+    let s = String::from_utf8_lossy(&buf);
+    println!("First sector {s}");
+    let source = b"Hello from kernel!\n";
+    unsafe {
+        copy_nonoverlapping(source.as_ptr(), buf.as_mut_ptr(), source.len());
+    }
+
+    driver.read_write_disk(&mut buf, 0, true);
 
     process::create_process(constants::SHELL);
 

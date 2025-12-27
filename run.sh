@@ -23,5 +23,7 @@ $QEMU -machine virt \
     -m 128M \
     -d cpu_reset,unimp,guest_errors,int -D qemu.og \
     -serial mon:stdio \
+    -drive id=drive0,file=lorem.txt,format=raw,if=none \
+    -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 \
     --no-reboot \
     -kernel ./kernel.elf

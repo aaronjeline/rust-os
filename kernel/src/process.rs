@@ -1,7 +1,9 @@
 use crate::{
     constants::{self, USER_BASE},
     memory::{self, PAGE_SIZE, PTE, Paddr, PageFlags, Vaddr, alloc_pages},
-    println, write_csr,
+    println,
+    virtio::VIRTIO_BLK_PADDR,
+    write_csr,
 };
 use core::{
     arch::{asm, naked_asm},
@@ -213,6 +215,14 @@ impl Scheduler {
                 PageFlags::kernel_all(),
             );
         }
+
+        // Map virtio page
+        memory::map_page(
+            proc.page_table,
+            Vaddr(VIRTIO_BLK_PADDR),
+            Paddr(VIRTIO_BLK_PADDR as *mut u8),
+            PageFlags::default().read().write(),
+        );
 
         // Map user pages
         let image_size = image.len();
