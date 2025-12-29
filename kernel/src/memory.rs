@@ -223,7 +223,7 @@ fn is_aligned(value: u64) -> bool {
     value % 4096 == 0
 }
 
-pub fn align_up(value: usize, align: usize) -> usize {
+pub const fn align_up(value: usize, align: usize) -> usize {
     if value % align == 0 {
         value
     } else {

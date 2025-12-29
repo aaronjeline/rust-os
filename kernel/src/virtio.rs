@@ -13,7 +13,7 @@ use crate::{
     println,
 };
 
-const SECTOR_SIZE: u64 = 512;
+pub const SECTOR_SIZE: u64 = 512;
 
 const VIRTQ_ENTRY_NUM: usize = 16;
 const VIRTIO_DEVICE_BLK: u32 = 2;

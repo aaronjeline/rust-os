@@ -8,6 +8,7 @@ mod dummy_procs;
 mod memory;
 mod process;
 mod sbi;
+mod tar;
 mod virtio;
 #[macro_use]
 mod print;
@@ -20,6 +21,8 @@ use constants::*;
 use core::arch::asm;
 use core::panic::PanicInfo;
 use core::ptr::copy_nonoverlapping;
+
+use crate::tar::BlockDevice;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]
@@ -63,16 +66,8 @@ fn main() -> ! {
     println!("Allocator initialized!");
 
     let mut driver = virtio::BlockDeviceDriver::new();
-    let mut buf = [0; 512];
-    driver.disk_read(&mut buf, 0).unwrap();
-    let s = String::from_utf8_lossy(&buf);
-    println!("First sector {s}");
-    let source = b"Hello from kernel!\n";
-    unsafe {
-        copy_nonoverlapping(source.as_ptr(), buf.as_mut_ptr(), source.len());
-    }
-
-    driver.disk_write(&buf, 0).unwrap();
+    let dev = BlockDevice::init(&mut driver).expect("Error initializing block device");
+    let fs = tar::FileSystem::init(&dev).expect("Error intializing filesystem");
 
     process::create_process(constants::SHELL);
 

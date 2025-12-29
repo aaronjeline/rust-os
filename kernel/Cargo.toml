@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 spin = "0.10.0"
 common = { path = "../common" }
+tarfile = { path = "../tarfile" }
+nom = { version = "8.0.0", default-features = false, features = ["alloc"] }
 
 [profile.dev]
 panic = "abort"

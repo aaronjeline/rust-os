@@ -28,3 +28,25 @@ impl TryFrom<u64> for Syscall {
         }
     }
 }
+
+pub fn oct2int(oct: &[u8]) -> u64 {
+    let mut dec = 0;
+    for c in oct {
+        if *c < b'0' || *c > b'7' {
+            break;
+        }
+        dec = dec * 8 + ((*c - b'0') as u64);
+    }
+    dec
+}
+
+#[cfg(test)]
+mod test {
+    use super::oct2int;
+
+    #[test]
+    fn test_oct2int() {
+        let src = b"00000000007 ";
+        assert_eq!(oct2int(src), 7);
+    }
+}

@@ -11,7 +11,9 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "common",
+ "nom",
  "spin",
+ "tarfile",
 ]
 
 [[package]]
@@ -24,6 +26,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "memchr"
+version = "2.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+
+[[package]]
+name = "nom"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -33,7 +50,6 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "shell"
 version = "0.1.0"
 dependencies = [
- "common",
  "userlib",
 ]
 
@@ -44,6 +60,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 dependencies = [
  "lock_api",
+]
+
+[[package]]
+name = "tarfile"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "nom",
 ]
 
 [[package]]

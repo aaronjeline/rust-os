@@ -1,5 +1,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 
+use crate::println;
+
 struct Mutable {
     next: usize,
     end: usize,
@@ -40,7 +42,9 @@ unsafe impl GlobalAlloc for BumpAllocator {
         addr as *mut u8
     }
 
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        println!("Dealloc called lol");
+    }
 }
 
 #[global_allocator]
